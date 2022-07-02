@@ -4,6 +4,11 @@ from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from passlib.context import CryptContext
+from sqlalchemy.orm import Session
+
+from sql_app import models
+from sql_app.database import SessionLocal, engine
+
 from pydantic import BaseModel
 
 '''*********************************************************************************************************************
@@ -15,15 +20,16 @@ SECRET_KEY = "99c5f4233b93f7099f6f0f4caa6cf63b88e8d3e709d25e094faa6ca2556c8181"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 120
 
-fake_users_db = {  # DATABASE!!!!!
-    "johndoe": {
-        "username": "johndoe",
-        "full_name": "John Doe",
-        "email": "johndoe@example.com",
-        "hashed_password": "$2b$12$EixZaYVK1fsbw1ZfbX3OXePaWxn96p36WQoeG6Lruj3vjPGga31lW",  #secret
-        "disabled": False,
-    }
-}
+models.Base.metadata.create_all(bind=engine)
+
+
+# Dependency
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
 
 class Token(BaseModel):
@@ -31,14 +37,7 @@ class Token(BaseModel):
     token_type: str
 
 
-class User(BaseModel):
-    username: str
-    email: str | None = None
-    full_name: str | None = None
-    disabled: bool | None = None
-
-
-class UserInDB(User):
+class UserInDB(models.User):
     hashed_password: str
 
 
@@ -53,19 +52,17 @@ def verify_password(plain_password, hashed_password):
     return pwd_context.verify(plain_password, hashed_password)
 
 
-def get_user(db, username: str):
-    if username in db:
-        user_dict = db[username]
-        return UserInDB(**user_dict)
+def get_user_by_username(db: Session, username: str):
+    return db.query(models.User).filter(models.User.username == username).first()
 
 
-def authenticate_user(fake_db, username: str, password: str):
-    user = get_user(fake_db, username)
-    if not user:
+def authenticate_user(db: Session, username: str, password: str):
+    db_user = get_user_by_username(db, username)
+    if not db_user:
         return False
-    if not verify_password(password, user.hashed_password):
+    if not verify_password(password, db_user.hashed_password):
         return False
-    return user
+    return db_user
 
 
 def create_access_token(data: dict, expires_delta: timedelta | None = None):
@@ -80,8 +77,8 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None):
 
 
 @app.post("/token", response_model=Token)
-async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
-    user = authenticate_user(fake_users_db, form_data.username, form_data.password)
+async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    user = authenticate_user(db, form_data.username, form_data.password)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
